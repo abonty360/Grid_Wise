@@ -1,0 +1,452 @@
+================================================================================
+GRIDWISE — AI-POWERED 24-HOUR ENERGY OPTIMIZATION PLATFORM
+Complete System Architecture, Technical Manual & Project Overview
+================================================================================
+Stack: PERN (Neon PostgreSQL, Express, React 18, Node.js)
+Frontend UI: Vite 8, TailwindCSS v4, Recharts, Lucide Icons, Zustand
+AI Engine: LLM NLU (OpenAI / Gemini) with Strict Zod Guardrails
+Dispatch Solver: Deterministic Multi-Phase Greedy Cost Minimizer
+Version: 2.0.0 Commercial Edition
+Date: September 2026
+================================================================================
+
+
+--------------------------------------------------------------------------------
+TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+1. PROJECT OVERVIEW & PROBLEM STATEMENT
+2. END-TO-END SYSTEM ARCHITECTURE & DATA FLOW
+3. THE BACKEND ENGINE (server/)
+4. THE LLM NATURAL LANGUAGE PIPELINE (llmService.js)
+5. THE MATHEMATICAL OPTIMIZATION SOLVER (optimizer.js)
+6. 13-POINT CONSTRAINT VALIDATION SYSTEM (validator.js)
+7. DATABASE ARCHITECTURE & MIGRATIONS (migrations/)
+8. THE FRONTEND ARCHITECTURE (client/)
+9. PAGE-BY-PAGE BREAKDOWN & FEATURES
+10. REST API CONTRACT & ENDPOINTS
+11. AUTHENTICATION & ROLE-BASED ACCESS CONTROL (RBAC)
+12. TESTING, VERIFICATION & DEMO CREDENTIALS
+
+
+================================================================================
+1. PROJECT OVERVIEW & PROBLEM STATEMENT
+================================================================================
+Commercial and industrial facilities face major challenges in daily energy operations:
+
+1. Dynamic Grid Tariffs: Electricity spot prices fluctuate significantly throughout
+   the day. Peak tariff windows (e.g., 5 PM - 9 PM) can cost 2x-3x normal rates.
+2. Intermittent Solar Generation: On-site rooftop solar follows daylight availability
+   that rarely coincides perfectly with facility machinery and demand peaks.
+3. Battery Storage Constraints: Battery Energy Storage Systems (BESS) have strict
+   physical capacity limits, max charge/discharge C-rates, cycle efficiencies, and
+   minimum emergency reserve thresholds.
+4. Human Operator Instructions: Facility operators often have informal, natural-
+   language operational directives (e.g., "Do not charge battery between 2 PM and 4 PM",
+   "Keep at least 30 kWh in the battery for backup", "Cut solar expectations by 20%").
+
+GRIDWISE SOLUTION:
+GridWise bridges human operational intent with mathematical optimization:
+- Natural language operator instructions are parsed by an LLM strictly as an NLU
+  translation layer into machine-verifiable JSON directives.
+- A deterministic greedy solver minimizes total 24-hour grid procurement cost.
+- A 13-point mathematical validator ensures no physical or operational rules are breached.
+- Real Before vs. After baseline savings are calculated (cost in BDT, grid kWh, peak kW).
+- Full persistence in Neon Serverless PostgreSQL with a dark SaaS dashboard.
+
+
+================================================================================
+2. END-TO-END SYSTEM ARCHITECTURE & DATA FLOW
+================================================================================
+
+ [User Input: 24h Table, Battery, Operator Notes]
+                       │
+                       ▼
+ [React 18 + Zustand Store (useEnergyStore)]
+                       │
+                       ▼ (HTTP POST /optimize-energy)
+ [Express API Router & Zod Request Validator]
+                       │
+                       ▼
+ [LLM Service: OpenAI gpt-4o-mini / Gemini Flash]
+  Translates plain text -> Structured Directives JSON
+                       │
+                       ▼
+ [Zod Guardrail Validation (DirectiveSchema)]
+  Verifies schema, enum values, and hour bounds [0..23]
+                       │
+                       ▼
+ [Directive Transformation (directives.js)]
+  Converts JSON into solver constraints (Sets & Bounds)
+                       │
+                       ▼
+ [Deterministic Greedy Dispatch Solver (optimizer.js)]
+  Minimizes: Sum(grid[h] * tariff[h])
+                       │
+                       ▼
+ [13-Point Schedule Validator (validator.js)]
+  Verifies energy balance, SOC bounds, and directive compliance
+                       │
+                       ▼
+ [Baseline & Savings Calculator (costCalculator.js)]
+  Compares unmanaged baseline vs optimized dispatch
+                       │
+                       ▼
+ [Neon Serverless PostgreSQL (SSL)]
+  Persists scenarios, operator notes, and energy plans
+                       │
+                       ▼
+ [Client UI: Live Energy Flow, Charts, Tables, Exports]
+
+
+================================================================================
+3. THE BACKEND ENGINE (server/)
+================================================================================
+The backend is structured into modular core libraries and auto-mounted features:
+
+Directory Structure:
+server/src/
+├── index.js                      # Entry point: loads .env, seeds Admin account
+├── core/
+│   ├── app.js                   # Express configuration, CORS, /health diagnostics
+│   ├── router.js                # Auto-router that scans and mounts *.routes.js files
+│   ├── db.js                    # pg Pool connected to Neon PostgreSQL with SSL
+│   ├── middleware/
+│   │   └── errorHandler.js      # Global error handler and asyncHandler wrapper
+│   ├── auth/
+│   │   ├── auth.service.js      # JWT sign/verify, bcrypt hashing, user management
+│   │   └── auth.middleware.js   # authenticate, requireAdmin, optionalAuth
+│   ├── llm/
+│   │   └── llmService.js        # OpenAI/Gemini providers + Zod schema validation
+│   └── optimizer/
+│       ├── optimizer.js         # Greedy dispatch solver + deterministic fallback
+│       ├── directives.js        # Directive-to-constraint transformation engine
+│       ├── costCalculator.js    # Cost calculation, battery action classification, baseline
+│       └── validator.js         # 13-point mathematical schedule validator
+└── features/
+    ├── auth/
+    │   ├── auth.controller.js   # Route handlers: register, login, me, admin users
+    │   └── auth.routes.js       # Auto-mounted at /auth
+    └── energy/
+        ├── energy.controller.js # Route handlers: optimize, scenarios, history, analytics
+        ├── energy.service.js    # Pipeline orchestration & PostgreSQL persistence
+        ├── energy.validation.js # Zod validation schema for incoming requests
+        ├── energy.routes.js     # Auto-mounted at /optimize-energy
+        ├── scenarios.routes.js  # Auto-mounted at /scenarios
+        ├── history.routes.js    # Auto-mounted at /history
+        └── analytics.routes.js  # Auto-mounted at /analytics
+
+Auto-Mounting Router Mechanism:
+`core/router.js` recursively scans `src/features/` on boot. Any file ending in
+`*.routes.js` that exports `{ router, prefix }` is automatically mounted into
+Express. New feature routes never require modifying `app.js`.
+
+
+================================================================================
+4. THE LLM NATURAL LANGUAGE PIPELINE (llmService.js)
+================================================================================
+
+Core Architectural Rule: "Untrusted AI"
+- The LLM does NOT perform optimization.
+- The LLM does NOT calculate costs or schedules.
+- The LLM does NOT simulate battery physics.
+- It is strictly an NLU layer translating plain text into structured JSON.
+- No simplistic keyword matching (e.g. if note.includes('charge')) is used.
+
+Time Semantics Rule: Start-Inclusive, End-Exclusive
+Human time expressions are translated into discrete 0-23 hourly indices:
+- "2 PM to 4 PM"   -> hours: [14, 15]  (hour 16:00 is excluded)
+- "1 PM to 3 PM"   -> hours: [13, 14]
+- "Midnight to 6 AM" -> hours: [0, 1, 2, 3, 4, 5]
+
+The 6 Supported Directives:
+1. no_charge_window:
+   Example: "Do not charge the battery between 2 PM and 4 PM"
+   Payload: { "hours": [14, 15] }
+2. no_discharge_window:
+   Example: "Do not discharge the battery before noon"
+   Payload: { "hours": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] }
+3. minimum_battery_reserve:
+   Example: "Keep battery reserve above 30 kWh"
+   Payload: { "reserve_kwh": 30.0 }
+4. solar_reduction:
+   Example: "Reduce solar availability by 20%"
+   Payload: { "factor": 0.8 } (remaining multiplier for available solar)
+5. max_grid_window:
+   Example: "Limit grid draw to 60 kW between 5 PM and 9 PM"
+   Payload: { "max_grid_kwh": 60, "hours": [17, 18, 19, 20] }
+6. no_op:
+   Example: "Facility maintenance scheduled for next Friday"
+   Payload: null (applies: false)
+
+Zod Guardrails:
+All LLM responses are validated with `DirectiveSchema`. If the provider returns
+malformed JSON, invalid hours (<0 or >23), or unauthorized directive types,
+the validation fails safely and the system falls back to a clean no_op directive
+without interrupting the optimization pipeline.
+
+
+================================================================================
+5. THE MATHEMATICAL OPTIMIZATION SOLVER (optimizer.js)
+================================================================================
+
+Objective Function:
+   Minimize:  Sum(h=0 to 23) [ grid[h] * tariff[h] ]
+
+Deterministic Dispatch Logic for Each Hour h (0..23):
+
+Step 1: Solar Priority (Zero Marginal Cost)
+   solar_used[h] = min( demand[h], effective_solar[h] )
+   remaining_demand[h] = demand[h] - solar_used[h]
+   excess_solar[h] = effective_solar[h] - solar_used[h]
+
+Step 2: Economic Battery Discharge Arbitrage
+   Discharge occurs when remaining demand exists, battery energy is above min reserve,
+   discharging is permitted (h not in noDischargeHours), and the current tariff is high
+   (tariff[h] >= avgTariff OR tariff[h] == peakFutureTariff):
+   max_discharge_avail = min( remaining_demand[h], battery.max_discharge, prevEnergy - minReserve )
+   discharge[h] = max( 0, max_discharge_avail )
+   remaining_demand[h] = remaining_demand[h] - discharge[h]
+
+Step 3: Grid Import
+   grid[h] = max( 0, remaining_demand[h] )
+   If a max_grid directive is active: grid[h] <= max_grid_kwh
+
+Step 4: Free Solar Battery Charging
+   If h not in noChargeHours and battery has room, charge from excess solar:
+   charge[h] = min( excess_solar[h], battery.max_charge, battery.capacity - prevEnergy )
+
+Step 5: Battery Energy State Update
+   battery_energy[h] = prevEnergy + charge[h] - discharge[h]
+   Enforced bounds: minReserve <= battery_energy[h] <= battery.capacity
+
+Step 6: Battery Action Classification
+   If charge[h] > 0.001       -> Action = "charge"
+   If discharge[h] > 0.001    -> Action = "discharge"
+   Otherwise                  -> Action = "idle"
+
+Deterministic Baseline Comparison:
+To calculate real savings without fabrication, the system computes an unmanaged baseline:
+   baseline_grid[h] = max( 0, demand[h] - solar[h] )
+   baseline_cost = Sum(h=0 to 23) [ baseline_grid[h] * tariff[h] ]
+   cost_savings_bdt = baseline_cost - optimized_cost
+   cost_savings_pct = (cost_savings_bdt / baseline_cost) * 100
+
+
+================================================================================
+6. 13-POINT CONSTRAINT VALIDATION SYSTEM (validator.js)
+================================================================================
+Every generated schedule is audited across 13 strict checks before delivery:
+
+1.  24 hour records: Must contain exactly 24 data rows.
+2.  Hour range valid: Rows must index sequentially from hour 0 to 23.
+3.  No duplicate hours: Every hour index must be unique.
+4.  Energy balance valid: solar_used[h] + grid[h] + discharge[h] == demand[h] (+-0.01 kW).
+5.  Solar limit valid: solar_used[h] <= effective_solar[h].
+6.  Battery capacity valid: battery_energy[h] <= battery.capacity.
+7.  Minimum reserve valid: battery_energy[h] >= minReserve for all hours.
+8.  Charge rate valid: charge[h] <= battery.max_charge.
+9.  Discharge rate valid: discharge[h] <= battery.max_discharge.
+10. Grid non-negative: grid[h] >= 0 at all times (no illegal grid backfeed).
+11. No-charge windows respected: For all h in noChargeHours, charge[h] <= 0.01 kW.
+12. No-discharge windows respected: For all h in noDischargeHours, discharge[h] <= 0.01 kW.
+13. All values finite: No NaN, null, or Infinity in any numeric output field.
+
+
+================================================================================
+7. DATABASE ARCHITECTURE & MIGRATIONS (migrations/)
+================================================================================
+Database: Neon Serverless PostgreSQL with SSL (sslmode=require).
+Runner: server/scripts/migrate.js (executed via `npm run migrate`).
+
+Migration Files:
+- 001_create_energy_scenarios.sql:
+  Table: energy_scenarios
+  Stores scenario_id (TEXT UNIQUE), battery specs (capacity, initial energy, max rates,
+  efficiency), hours_data (JSONB), timestamps.
+- 002_create_operator_notes.sql:
+  Table: energy_operator_notes
+  Stores scenario_id (FK), raw_notes (TEXT[]), llm_provider, llm_model, directives (JSONB),
+  interpretation_summary, processing_time_ms.
+- 003_create_energy_plans.sql:
+  Table: energy_plans
+  Stores scenario_id (FK), hourly_plan (JSONB), total_cost, total_grid_import_kwh,
+  peak_demand_kw, battery_cycles_used, objectives_met (TEXT[]), optimized_at.
+- 004_create_users.sql:
+  Table: users
+  Stores id (UUID), email (UNIQUE), password_hash (bcrypt), name, role ('user' | 'admin'),
+  created_at, updated_at.
+- 005_update_tables.sql:
+  Adds user_id (FK) and human-readable name, description, and status to scenarios and plans.
+
+
+================================================================================
+8. THE FRONTEND ARCHITECTURE (client/)
+================================================================================
+The frontend is built with React 18, Vite 8, TailwindCSS v4, Recharts, and Zustand:
+
+Client Directory:
+client/src/
+├── index.html                   # HTML shell with Google Fonts (Inter + JetBrains Mono)
+├── App.css                      # Tailwind v4 import, glassmorphism, Recharts overrides
+├── main.jsx                     # React root mount
+├── App.jsx                      # App root with BrowserRouter and AppRouter
+├── router/
+│   ├── routes.js                # Centralized route definitions (PATHS and ROUTES array)
+│   └── AppRouter.jsx            # Lazy-loaded route renderer with Suspense fallback
+├── store/
+│   ├── useEnergyStore.js        # Central state: active scenario, battery, 5 presets, results
+│   └── useAuthStore.js          # Authentication state: JWT token, user profile, role helpers
+├── api/
+│   ├── client.js                # Axios instance with Bearer JWT interceptors
+│   ├── energy.api.js            # API methods: optimizeEnergy, scenarios, history, analytics
+│   └── auth.api.js              # Auth API methods: login, register, listUsers, updateRole
+├── shared/components/
+│   ├── Layout.jsx               # Persistent sidebar, header, system health status, mobile nav
+│   ├── EnergyFlow.jsx           # Animated interactive energy flow matrix with 24h scrubber
+│   ├── BatteryMeter.jsx         # Visual SOC gauge with minimum reserve marker line
+│   ├── MetricCard.jsx           # Reusable KPI card with glow styling and typography
+│   ├── ValidationPanel.jsx      # 13-point validation checks card with pass/fail badges
+│   ├── CsvImportModal.jsx       # CSV upload & parse modal with strict 24-row validation
+│   └── OptimizationProgressModal.jsx # 5-stage real progress indicator
+└── features/
+    ├── dashboard/DashboardPage.jsx  # Overview with live KPIs, charts, and flow matrix
+    ├── energy/
+    │   ├── EnergyInputPage.jsx      # 24h spreadsheet table, battery sliders, note editor
+    │   └── EnergyResultPage.jsx     # Before/After savings, dispatch charts, table, export
+    ├── scenarios/ScenariosPage.jsx  # PostgreSQL scenario library and demo preset launchers
+    ├── history/HistoryPage.jsx      # Audit log of past optimizations with search filter
+    ├── analytics/AnalyticsPage.jsx  # Multi-run cost and grid utilization trend charts
+    ├── settings/SettingsPage.jsx    # System preferences, currency switcher, diagnostics
+    ├── auth/
+    │   ├── LoginPage.jsx            # Sign-in form with pre-seeded demo credentials hint
+    │   └── RegisterPage.jsx         # User registration form
+    └── admin/AdminPage.jsx          # Admin Control Center: view users, promote/demote roles
+
+
+================================================================================
+9. PAGE-BY-PAGE BREAKDOWN & FEATURES
+================================================================================
+
+1. Dashboard (/ or /dashboard):
+   - Command center displaying 4 live KPI cards: Total Grid Consumption (kWh),
+     Total Energy Cost (BDT), Peak Grid Demand (kW), and Battery SOC (%).
+   - Interactive Energy Flow Matrix: Animated power routing (Solar -> Load,
+     Grid -> Load, Battery <-> Load) with an interactive 24-hour scrub slider (00:00 - 23:00).
+   - 24-Hour Energy Overview Area Chart: Demand, Solar, and Grid import curves.
+   - Dedicated Battery State Card: Gauge with capacity, energy, and reserve lines.
+   - Hourly Tariff Bar Chart: Spot pricing across the day (BDT/kWh).
+   - AI Directives Card: Lists interpreted directives with applied status tags.
+
+2. Optimize Energy Workspace (/energy/new):
+   - 24-Hour Spreadsheet Table: Editable cells for Demand, Solar, and Tariff with
+     live sum/average calculations in the footer.
+   - CSV Import Modal: Upload or paste CSV data with strict 24-row validation.
+   - Battery Configuration Card (BESS): Interactive sliders for Capacity, Initial
+     Energy, Min Reserve, and Hourly Charge/Discharge limits with instant visual preview.
+   - Operator Instructions Editor: Plain-English text area with 5 quick-add chips.
+   - 5-Stage Optimization Progress Modal: Visualizes LLM translation, guardrails,
+     constraint application, dispatch solver execution, and database persistence.
+
+3. Optimization Result Page (/energy/result/:scenarioId):
+   - Before vs. After Analysis: Direct comparison of unmanaged baseline vs optimized
+     schedule with exact savings in BDT (%) and grid reduction in kWh (%).
+   - Interactive 24-Hour Dispatch Area Chart: Series toggles for Demand, Solar, Grid.
+   - Battery SOC Profile Chart: Area plot showing 24h charging/discharging trajectory.
+   - Energy Source Breakdown Donut Chart: Solar %, Grid %, and Battery Discharge %.
+   - 13-Point Constraint Validation Panel: Pass/fail audit of all physical bounds.
+   - 24-Hour Detailed Schedule Table: Tabular breakdown with action badges (CHARGE,
+     DISCHARGE, IDLE) and exact costs.
+   - Export Buttons: One-click Export JSON and Export CSV downloads.
+
+4. Scenarios Library (/scenarios):
+   - 5 Quick-Launch Demo Presets: Normal Day, High Demand Industrial Day, Low Solar Day,
+     Peak Tariff Spike Day, and Battery Maintenance Day.
+   - PostgreSQL Scenario Table: Lists saved scenarios with name, ID, battery capacity,
+     status, and cost, with Open, Duplicate, and Delete actions.
+
+5. Optimization History (/history):
+   - Chronological audit log of all completed runs queried from Neon PostgreSQL.
+   - Displays scenario name, date, total grid, peak demand, total cost, and status.
+   - Clickable rows navigate directly back to the full result report for that past run.
+
+6. Analytics & Trends (/analytics):
+   - Macro-level facility performance trends across sequential optimization runs.
+   - Historical Cost Bar Chart and Grid Import vs. Solar Utilization Trend Line.
+   - Time filters: Today, Last 7 Days, Last 30 Days, and All Time.
+
+7. System Settings (/settings):
+   - Preferences: Currency switcher (default: BDT, USD, EUR) and battery capacity sizing.
+   - Live Infrastructure Status: Neon PostgreSQL connection status, SSL verification,
+     and applied migration count (5 migrations).
+   - LLM Diagnostics: Active provider (OpenAI / Gemini), model, and Zod validation status.
+
+8. Authentication & Admin (/auth/login, /auth/register, /admin):
+   - Sign in and registration with pre-seeded demo credentials hint.
+   - Admin Control Center: Protected view allowing administrators to inspect all
+     registered accounts and promote/demote roles (user <-> admin).
+
+
+================================================================================
+10. REST API CONTRACT & ENDPOINTS
+================================================================================
+
+GET  /health                  - Diagnostics check (API, Neon DB, Optimizer, LLM status)
+POST /optimize-energy         - Runs LLM interpretation, greedy optimization & DB save
+GET  /scenarios               - Lists all saved scenarios from PostgreSQL
+POST /scenarios               - Saves a scenario draft to PostgreSQL
+GET  /scenarios/:id           - Retrieves a scenario with its latest plan and notes
+DELETE /scenarios/:id         - Deletes a scenario from PostgreSQL
+GET  /history                 - Retrieves past optimization runs from energy_plans
+GET  /analytics               - Computes aggregate multi-run trends and statistics
+POST /auth/register           - Registers a new user account (returns JWT token)
+POST /auth/login              - Authenticates email/password (returns JWT token)
+GET  /auth/me                 - Retrieves profile of current authenticated user
+GET  /auth/admin/users        - Lists all registered users (Admin only)
+PUT  /auth/admin/users/:id/role - Updates a user's role: 'user' or 'admin' (Admin only)
+
+
+================================================================================
+11. AUTHENTICATION & ROLE-BASED ACCESS CONTROL (RBAC)
+================================================================================
+- Password Hashing: bcryptjs with 12 salt rounds.
+- Tokens: JSON Web Tokens (JWT) signed with HS256 containing user ID and role.
+- Interceptor: Client automatically attaches Bearer token from localStorage.
+- Protected Middleware:
+  - authenticate: Validates token and attaches user record to req.user.
+  - requireAdmin: Rejects requests with 403 Forbidden if user.role !== 'admin'.
+  - optionalAuth: Attaches user if token is present; does not reject guest visitors.
+
+Pre-Seeded Demo Admin Credentials:
+- Email:    admin@gridwise.io
+- Password: GridWise2026!
+- Role:     admin
+
+
+================================================================================
+12. TESTING, VERIFICATION & DEMO CREDENTIALS
+================================================================================
+
+Unit & Integration Test Suite:
+Run via terminal:
+   node server/test/optimizer.test.js
+
+Test Verification Coverage:
+1. Baseline Calculation: Verifies unmanaged grid import and cost formulas.
+2. Directive Translation: Tests start-inclusive/end-exclusive time window translation.
+3. Cost Optimization: Confirms optimizer generates lower cost than baseline.
+4. Constraint Compliance: Confirms battery energy never drops below reserve and
+   charging is suppressed during restricted hours.
+5. 13-Point Schedule Validator: Asserts all 13 physical checks return 'pass'.
+
+Quick Start Commands:
+- Install root/server/client packages: npm install
+- Run database migrations:            npm run migrate
+- Run concurrent development servers: npm run dev
+  * Frontend: http://localhost:5173
+  * Backend:  http://localhost:5000
+  * Health:   http://localhost:5000/health
+
+Docker Deployment:
+   docker-compose up --build
+Orchestrates postgres (5432), server (5000), and client (80 via Nginx).
+================================================================================
