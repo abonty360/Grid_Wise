@@ -6,6 +6,8 @@
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
+const path = require('path');
+const fs = require('fs');
 const { errorHandler } = require('./middleware/errorHandler');
 const mountRoutes = require('./router');
 
@@ -17,25 +19,32 @@ app.use(morgan('dev'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ── Root directory & redirect ──────────────────────────────────────────────
-app.get('/', (req, res) => {
-  if (req.headers.accept && req.headers.accept.includes('text/html')) {
-    return res.redirect('http://localhost:5173');
-  }
-  return res.json({
-    platform: 'GridWise AI Energy Optimization Engine',
-    version: '2.0.0',
-    status: 'online',
-    endpoints: {
-      health: 'GET /health',
-      optimize_energy: 'POST /optimize-energy (GET /optimize-energy for schema)',
-      scenarios: 'GET /scenarios',
-      history: 'GET /history',
-      analytics: 'GET /analytics',
-    },
-    web_app: 'http://localhost:5173',
+const clientDistPath = path.resolve(__dirname, '../../../client/dist');
+const hasClientBuild = fs.existsSync(clientDistPath);
+
+if (hasClientBuild) {
+  app.use(express.static(clientDistPath));
+} else {
+  // ── Root directory & redirect (Dev fallback) ────────────────────────────────
+  app.get('/', (req, res) => {
+    if (req.headers.accept && req.headers.accept.includes('text/html')) {
+      return res.redirect(process.env.CLIENT_URL || 'http://localhost:5173');
+    }
+    return res.json({
+      platform: 'GridWise AI Energy Optimization Engine',
+      version: '2.0.0',
+      status: 'online',
+      endpoints: {
+        health: 'GET /health',
+        optimize_energy: 'POST /optimize-energy (GET /optimize-energy for schema)',
+        scenarios: 'GET /scenarios',
+        history: 'GET /history',
+        analytics: 'GET /analytics',
+      },
+      web_app: process.env.CLIENT_URL || 'http://localhost:5173',
+    });
   });
-});
+}
 
 // ── Health check (core — returns live service diagnostics) ──────────────────────
 const { query } = require('./db');
@@ -72,6 +81,16 @@ app.get('/health', async (req, res) => {
 
 // ── Auto-mount feature routes ─────────────────────────────────────────────────
 mountRoutes(app);
+
+// ── Serve React SPA for all other frontend routes ─────────────────────────────
+if (hasClientBuild) {
+  app.use((req, res, next) => {
+    if ((req.method === 'GET' || req.method === 'HEAD') && !req.path.startsWith('/api') && req.path !== '/health' && req.path !== '/optimize-energy') {
+      return res.sendFile(path.join(clientDistPath, 'index.html'));
+    }
+    next();
+  });
+}
 
 // ── Error handler (must be last) ──────────────────────────────────────────────
 app.use(errorHandler);

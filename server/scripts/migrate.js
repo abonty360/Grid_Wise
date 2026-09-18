@@ -6,15 +6,22 @@
  */
 
 require('dotenv').config({ path: require('path').resolve(__dirname, '../../.env') });
+require('dotenv').config();
 
 const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const isNeonOrRemote = process.env.DATABASE_URL && (process.env.DATABASE_URL.includes('neon.tech') || process.env.DATABASE_URL.includes('sslmode=require'));
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: (process.env.NODE_ENV === 'production' || isNeonOrRemote) ? { rejectUnauthorized: false } : false,
+});
 
 async function runMigrations() {
-  const migrationsDir = path.resolve(__dirname, '../../migrations');
+  const migrationsDir = fs.existsSync(path.resolve(__dirname, '../../migrations'))
+    ? path.resolve(__dirname, '../../migrations')
+    : path.resolve(__dirname, '../migrations');
 
   // Ensure migration tracking table exists
   await pool.query(`
